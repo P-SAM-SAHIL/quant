@@ -458,7 +458,7 @@ def self_test():
     assert torch.allclose(fwht(x), x @ hadamard(8).t(), atol=1e-5)
     x = torch.randn(2, 3, 12, generator=generator)
     hk, m = down_hadamard(12, 0)[1:]
-    explicit = torch.kron(hk, hadamard(m))
+    explicit = torch.kron(hk.contiguous(), hadamard(m).contiguous())
     assert torch.allclose(online_hadamard(x, hk, m), x @ explicit.t(), atol=1e-5)
 
 
