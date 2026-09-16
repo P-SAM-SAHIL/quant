@@ -142,14 +142,16 @@ def hadamard_or_orthogonal(n, seed):
     m = n & -n
     k = n // m
     hk = hadamard(k) if k & (k - 1) == 0 else orthogonal(k, seed)
-    return torch.kron(hk, hadamard(m))
+    # torch.kron may use view internally; make both operands contiguous for
+    # compatibility with PyTorch versions that reject non-contiguous views.
+    return torch.kron(hk.contiguous(), hadamard(m).contiguous())
 
 
 def down_hadamard(n, seed):
     m = n & -n
     k = n // m
     hk = hadamard(k) if k & (k - 1) == 0 else orthogonal(k, seed + 17)
-    return torch.kron(hk, hadamard(m)), hk, m
+    return torch.kron(hk.contiguous(), hadamard(m).contiguous()), hk, m
 
 
 def online_hadamard(x, hk, m):
