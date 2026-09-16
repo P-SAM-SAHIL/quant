@@ -264,6 +264,31 @@ def fuse_norms(model):
             if getattr(norm, "bias", None) is not None:
                 norm.bias.data.zero_()
 
+    # The final norm is followed by lm_head, not by a projection in a decoder
+    # layer.  SpinQuant fuses this norm before rotating the model.  Rotating
+    # the input to an unfused RMSNorm is not equivalent because RMSNorm is not
+    # invariant under a general orthogonal rotation.
+    norm = getattr(model.model, "norm", None)
+    head = getattr(model, "lm_head", None)
+    if norm is None or not hasattr(norm, "weight"):
+        raise RuntimeError("Missing model.norm; cannot apply SpinQuant safely.")
+    if not isinstance(head, nn.Linear):
+        raise RuntimeError("lm_head must be a plain Linear before rotation.")
+    gamma = norm.weight.detach().float()
+    beta = getattr(norm, "bias", None)
+    beta = beta.detach().float() if beta is not None else None
+    old_w = head.weight.detach().float()
+    head.weight.data.copy_((old_w * gamma).to(head.weight.dtype))
+    if beta is not None:
+        if head.bias is None:
+            head.bias = nn.Parameter(torch.zeros(
+                head.out_features, device=head.weight.device,
+                dtype=head.weight.dtype))
+        head.bias.data.add_((old_w @ beta).to(head.bias.dtype))
+    norm.weight.data.fill_(1)
+    if getattr(norm, "bias", None) is not None:
+        norm.bias.data.zero_()
+
 
 def apply_spinquant(model, seed, rotation_path=None):
     """Bake SpinQuant R1/R2 and R4 into a normal HF model."""
@@ -282,7 +307,10 @@ def apply_spinquant(model, seed, rotation_path=None):
 
     with torch.no_grad():
         mm.embed_tokens = _Rotate(mm.embed_tokens, q.t())
-        mm.norm = _Rotate(mm.norm, q, pre=True)
+        # fuse_norms() has already absorbed the final norm into lm_head, so
+        # the final hidden state remains in the rotated basis.
+        model.lm_head.weight.data.copy_(
+            (model.lm_head.weight.float() @ q.t()).to(model.lm_head.weight.dtype))
         for i, layer in enumerate(mm.layers):
             for path in ("self_attn.q_proj", "self_attn.k_proj",
                          "mlp.gate_proj", "mlp.up_proj"):
